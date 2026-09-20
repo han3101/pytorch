@@ -3558,6 +3558,35 @@ class CommonTemplate:
         a = torch.rand(())
         self.common(fn, (a,))
 
+    def test_logcumsumexp_unsupported_dtype_matches_eager(self):
+        # https://github.com/pytorch/pytorch/issues/197807
+        # logcumsumexp only supports floating/complex dtypes. Compiled code must
+        # raise NotImplementedError whenever eager does, including for 0-d inputs.
+        def fn(x):
+            return x.logcumsumexp(0)
+
+        def raises_not_implemented(f, x):
+            try:
+                f(x)
+            except Exception as e:
+                cause = e
+                while cause is not None:
+                    if isinstance(cause, NotImplementedError):
+                        return True
+                    cause = cause.__cause__ or cause.__context__
+                raise
+            return False
+
+        for dtype in (torch.uint8, torch.int32, torch.int64, torch.bool):
+            for shape in ((), (4,)):
+                x = torch.zeros(shape, dtype=dtype, device=self.device)
+                torch._dynamo.reset()
+                self.assertEqual(
+                    raises_not_implemented(torch.compile(fn), x),
+                    raises_not_implemented(fn, x),
+                    msg=f"dtype={dtype}, shape={shape}",
+                )
+
     def test_clamp(self):
         def fn(a, b):
             return (a.clamp(-0.1, 0.1), b.clamp(0), torch.clamp(a + b, max=0))
