@@ -32,8 +32,8 @@ HAS_DOT = shutil.which("dot") is not None
 class TestGraphTransformObserver(TestCase):
     def test_sdpa_rewriter(self):
         if not (
-            HAS_XPU_AND_TRITON
-            and (HAS_CUDA_AND_TRITON and PLATFORM_SUPPORTS_FUSED_ATTENTION)
+            (HAS_CUDA_AND_TRITON or HAS_XPU_AND_TRITON)
+            and PLATFORM_SUPPORTS_FUSED_ATTENTION
             and HAS_PYDOT
             and HAS_DOT
         ):
