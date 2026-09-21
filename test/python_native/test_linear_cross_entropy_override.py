@@ -759,11 +759,19 @@ class TestLinearCrossEntropyOverride(TestCase):
 
         # Any entry into the accumulator means the call fell back, and a
         # fallback would hide exactly the failure this test is about.
-        with unittest.mock.patch.object(
-            lce_module,
-            "_linear_cross_entropy_batch_chunked_accumulator",
-            wraps=lce_module._linear_cross_entropy_batch_chunked_accumulator,
-        ) as accumulator:
+        # `fill_uninitialized_memory` is the other half of the empty-batch
+        # test below: the parameter gradients are allocated uninitialized on
+        # the promise that the first chunk writes rather than accumulates, and
+        # under the guard anything the first chunk leaves untouched comes back
+        # nan instead of whatever the caching allocator last held.
+        with (
+            unittest.mock.patch.object(
+                lce_module,
+                "_linear_cross_entropy_batch_chunked_accumulator",
+                wraps=lce_module._linear_cross_entropy_batch_chunked_accumulator,
+            ) as accumulator,
+            DeterministicGuard(True, fill_uninitialized_memory=True),
+        ):
             fused = once()
             self.assertEqual(
                 accumulator.call_count,
@@ -791,6 +799,60 @@ class TestLinearCrossEntropyOverride(TestCase):
             rtol=4 * torch.finfo(dtype).eps,
             atol=0,
             msg="loss disagrees",
+        )
+
+    @_needs_kernel
+    def test_empty_batch_returns_a_zeroed_weight_gradient(self):
+        """`grad_linear_weight` is left uninitialized because the first chunk
+        writes it outright. An empty batch has no first chunk, so the early
+        return is the one path where that allocation has to be zeroed, and the
+        only place where skipping the fill would be visible as a wrong result.
+
+        `fill_uninitialized_memory` is what gives this teeth: `torch.empty`
+        otherwise tends to hand back zeroed pages, and the assertion would pass
+        whether or not the allocation is guarded. Nothing else in the mode
+        bears on this path: an empty batch returns before the chunk loop, so
+        the allocation under test is the only one the fill can reach.
+        """
+        import torch.nn.modules.linear_cross_entropy as lce_module
+
+        in_features, num_classes = 64, 512
+        input = torch.zeros(
+            0, in_features, device="cuda", dtype=torch.bfloat16, requires_grad=True
+        )
+        linear_weight = torch.randn(
+            num_classes, in_features, device="cuda", dtype=torch.bfloat16
+        ).requires_grad_()
+        target = torch.zeros(0, device="cuda", dtype=torch.int64)
+        options = _compact_options(batch_chunk_size=8)
+
+        with (
+            unittest.mock.patch.object(
+                lce_module,
+                "_linear_cross_entropy_batch_chunked_accumulator",
+                wraps=lce_module._linear_cross_entropy_batch_chunked_accumulator,
+            ) as accumulator,
+            DeterministicGuard(True, fill_uninitialized_memory=True),
+        ):
+            loss = torch.nn.functional.linear_cross_entropy(
+                input, linear_weight, target, options=options
+            )
+            self.assertEqual(
+                accumulator.call_count,
+                0,
+                "the call fell back to the accumulator, so this asserted the "
+                "eager path's allocation rather than the override's",
+            )
+            loss.backward()
+
+        self.assertTrue(torch.isnan(loss), "mean over an empty batch is nan")
+        self.assertEqual(
+            linear_weight.grad,
+            torch.zeros_like(linear_weight.grad),
+            atol=0,
+            rtol=0,
+            msg="the weight gradient is not zeroed on the path that has no "
+            "chunk to write it",
         )
 
     @_needs_kernel
