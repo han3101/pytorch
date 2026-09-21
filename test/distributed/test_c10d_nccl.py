@@ -355,8 +355,14 @@ class ProcessGroupNCCLGroupTest(MultiProcessTestCase):
     def setUp(self):
         super().setUp()
 
-        # The NaN check reports through a host-read flag on every backend, so
-        # the collective raises and the test exits with SIGABRT(6) itself.
+        # These tests are expected to exit with SIGABRT(6). The reporting
+        # mechanism differs by platform but the observable result does not:
+        #
+        # CUDA: device-side assert -> CUDA runtime surfaces it as an error ->
+        #       the test catches it and exits 6
+        # ROCm: check kernel sets a host-read flag -> the collective raises ->
+        #       the test catches it and exits 6
+        #
         # But if we are in Sandcastle, `skip_but_pass_in_sandcastle` would return 0.
         TEST_NAN_ASSERT_RETURN = (
             0 if (IS_SANDCASTLE and not TEST_MULTIGPU) else signal.SIGABRT

@@ -5,20 +5,19 @@
 #include <torch/library.h>
 #include <algorithm>
 
+#if defined(USE_ROCM)
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
 #else
 #include <ATen/ops/zeros.h>
 #endif
+#endif
 
 namespace c10d {
 namespace {
 
-// CUDA kernel to check if data has NAN. A NaN is reported through a device
-// flag that the host reads back, not through a device-side assert: on ROCm
-// CUDA_KERNEL_ASSERT compiles to a device abort(), which tears down the HSA
-// queue and kills the process, so the failure could never be turned into the
-// error that c10d::checkForNan is documented to throw.
+// CUDA kernel to check if data has NAN. See `reportNan` for how a detected
+// NaN gets back to the caller, which differs between CUDA and ROCm.
 
 // Using ulong2 as a "byte pack", with 16 bytes, for efficient data load
 union BytePack16 {
@@ -180,11 +179,27 @@ __device__ __forceinline__ bool chunkHasNan(BytePack* ptr) {
 #define ALIGN_UP(ptr, T) \
   (((uintptr_t)ptr + sizeof(T) - 1) / sizeof(T) * sizeof(T))
 
+// How a detected NaN is reported differs by platform. On CUDA the device-side
+// assert is kept: it costs nothing on the launch path and stays capturable
+// into a CUDA graph, whereas reading a flag back on the host would synchronize
+// before every checked collective. On ROCm the assert is unusable: with
+// USE_ROCM_KERNEL_ASSERT=OFF (the default) CUDA_KERNEL_ASSERT compiles to a
+// device abort(), which raises a hardware exception and lets the HSA
+// queue-error callback kill the process. No status ever reaches the host, so
+// the error that c10d::checkForNan is documented to throw could never be
+// raised. There the result travels back through `hasNan`, which the host reads
+// once the kernel has completed. Every writer stores the same value, so the
+// racing stores need no atomic. `hasNan` is null on CUDA.
+__device__ __forceinline__ void reportNan([[maybe_unused]] int32_t* hasNan) {
+#if defined(USE_ROCM)
+  *hasNan = 1;
+#else
+  CUDA_KERNEL_ASSERT_MSG(false, "NaN found in input tensor");
+#endif
+}
+
 // This is the host-facing kernel
 
-// `hasNan` is set to 1 by any thread that sees a NaN. Every writer stores the
-// same value, so the racing stores need no atomic; the host reads the flag
-// after the kernel completes.
 template <typename T>
 __global__ void checkForNaN(T* data, size_t size, int32_t* hasNan) {
   constexpr int EltPerPack = sizeof(BytePack) / sizeof(T);
@@ -198,7 +213,7 @@ __global__ void checkForNaN(T* data, size_t size, int32_t* hasNan) {
   // Read memory by T (slow). One iter is enough bc the number of threads would
   // be bigger than `preProcElts`
   if (offset < preProcElts && isnan(data[offset])) {
-    *hasNan = 1;
+    reportNan(hasNan);
     return;
   }
   // We have processes this amount of data
@@ -215,7 +230,7 @@ __global__ void checkForNaN(T* data, size_t size, int32_t* hasNan) {
   // The condition below makes sure there is enough data to process (`loopSize`)
   for (; offset + loopSize <= sizeInBP; offset += loopSize) {
     if (chunkHasNan<T>(ptr + offset)) {
-      *hasNan = 1;
+      reportNan(hasNan);
       return;
     }
   }
@@ -225,7 +240,7 @@ __global__ void checkForNaN(T* data, size_t size, int32_t* hasNan) {
   for (; offset < sizeInBP; offset += blockDim.x * gridDim.x) {
     BytePack tmp = ptr[offset];
     if (CheckBytePack<T, EltPerPack>::hasNan(&tmp)) {
-      *hasNan = 1;
+      reportNan(hasNan);
       return;
     }
   }
@@ -235,7 +250,7 @@ __global__ void checkForNaN(T* data, size_t size, int32_t* hasNan) {
   if (threadIdx.x < size % EltPerPack) {
     T* tailPtr = (T*)(ptr + sizeInBP);
     if (isnan(tailPtr[threadIdx.x])) {
-      *hasNan = 1;
+      reportNan(hasNan);
     }
   }
 }
@@ -257,8 +272,17 @@ void check_for_nan_cuda(const at::Tensor& tensor) {
       maxNumBlocks,
       (tensor.numel() + numThreadsPerBlock - 1) / numThreadsPerBlock);
 
+  // The flag below is zeroed on the current stream of the current device, so
+  // that has to be the stream the kernel is launched on.
+  c10::cuda::CUDAGuard device_guard(tensor.device());
   auto stream = at::cuda::getCurrentCUDAStream(tensor.device().index());
+
+#if defined(USE_ROCM)
   auto hasNan = at::zeros({}, tensor.options().dtype(at::kInt));
+  auto* hasNanPtr = hasNan.mutable_data_ptr<int32_t>();
+#else
+  int32_t* hasNanPtr = nullptr;
+#endif
 
   AT_DISPATCH_FLOATING_TYPES_AND4(
       at::ScalarType::Half,
@@ -269,15 +293,22 @@ void check_for_nan_cuda(const at::Tensor& tensor) {
       "checkForNaN",
       [&] {
         checkForNaN<scalar_t><<<numBlocks, numThreadsPerBlock, 0, stream>>>(
-            tensor.data_ptr<scalar_t>(),
-            tensor.numel(),
-            hasNan.data_ptr<int32_t>());
+            tensor.data_ptr<scalar_t>(), tensor.numel(), hasNanPtr);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
 
+#if defined(USE_ROCM)
   // Reading the flag synchronizes with the check kernel, so the throw happens
   // before the caller can enqueue work that consumes the tensor.
-  TORCH_CHECK(hasNan.item<int32_t>() == 0, "NaN found in input tensor.");
+  TORCH_CHECK(
+      hasNan.item<int32_t>() == 0,
+      "NaN found in input tensor. device=",
+      tensor.device(),
+      ", dtype=",
+      tensor.scalar_type(),
+      ", numel=",
+      tensor.numel());
+#endif
 }
 
 TORCH_LIBRARY_IMPL(c10d, CUDA, m) {
