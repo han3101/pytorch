@@ -1122,7 +1122,7 @@ def save_kernel_annotations(path: str | Path) -> None:
     (``torch.cuda._annotate_cuda_graph_trace``).
     """
     with open(path, "wb") as f:
-        pickle.dump(dict(_kernel_annotations), f)
+        pickle.dump(dict(get_kernel_annotations()), f)
 
 
 @deprecated(
@@ -1197,7 +1197,6 @@ def register_fqn_annotation_hooks(
 
         from torch.cuda._graph_annotations import (
             register_fqn_annotation_hooks,
-            remap_to_exec_graph,
             clear_kernel_annotations,
         )
 
@@ -1210,8 +1209,6 @@ def register_fqn_annotation_hooks(
 
         for h in handles:
             h.remove()
-
-        remap_to_exec_graph(g)
     """
     handles: list[Any] = []
     # Stack per module to handle re-entrant calls (e.g. same module used twice).
