@@ -73,6 +73,12 @@ class TestNanCheck(TestCase):
         self._check_for_nan(torch.randn(100000, device=ACCELERATOR))
         torch.accelerator.synchronize()
 
+    @unittest.skipUnless(HAS_ACCELERATOR, "no accelerator available")
+    def test_nan_float32_accelerator(self):
+        tensor = torch.tensor([1.0, float("nan")], device=ACCELERATOR)
+        with self.assertRaisesRegex(RuntimeError, "NaN found in input tensor"):
+            self._check_for_nan(tensor)
+
     def test_nan_float32(self):
         tensor = torch.tensor([1.0, 2.0, float("nan"), 4.0])
         with self.assertRaisesRegex(RuntimeError, "NaN"):
