@@ -346,11 +346,31 @@ if config.fallback_by_default:
             "test_cond_nested": fail_stack_allocation(),
             "test_cond_with_multiple_outputs": fail_stack_allocation(),
             "test_cond_with_parameters": fail_stack_allocation(),
+            "test_conv_freezing": fail_stack_allocation(),
             "test_const_graph_no_autotune_at_compile_time": fail_stack_allocation(),
             "test_constant_folding": fail_stack_allocation(),
             "test_constant_folding_with_update": fail_stack_allocation(),
             "test_deconv_freezing": fail_stack_allocation(),
+            "test_freezing": fail_stack_allocation(),
+            "test_linear_freezing": fail_stack_allocation(),
             "test_return_view_constant": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_drops_inferred_bound": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_drops_user_check": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_keeps_equality_asserts": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_keeps_sum_equality": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_keeps_two_sided_inequality": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_keeps_unbacked_vs_backed_bound": fail_stack_allocation(),
+            "test_scalar_range_asserts_disabled_under_full_runtime_assert": fail_stack_allocation(),
+            "test_simple_split": fail_stack_allocation(),
+            "test_size_with_unbacked_add_expr": fail_stack_allocation(),
+            "test_unbacked_equals_input_size_runtime_assertion_mark_unbacked_False": fail_stack_allocation(),
+            "test_unbacked_equals_input_size_runtime_assertion_mark_unbacked_True": fail_stack_allocation(),
+            "test_while_loop_with_conv_dynamic_False": fail_stack_allocation(),
+            "test_while_loop_with_conv_dynamic_True": fail_stack_allocation(),
+            "test_while_loop_with_sym_expr_cond_dynamic_False": fail_stack_allocation(),
+            "test_while_loop_with_sym_expr_cond_dynamic_True": fail_stack_allocation(),
+            "test_while_loop_with_unbacked_symint_closure_dynamic_False": fail_stack_allocation(),
+            "test_while_loop_with_unbacked_symint_closure_dynamic_True": fail_stack_allocation(),
             # This currently corrupts the lite-mode runner's constant-buffer
             # state and segfaults the process, which an expected failure cannot
             # contain. Keep the normal-mode coverage enabled.
@@ -412,6 +432,10 @@ if IS_FBCODE:
 
 class TestCppWrapperCpuSelection(TestCase):
     @patch.dict(os.environ, {"AOTI_RUNTIME_CHECK_INPUTS": "1"})
+    @unittest.skipIf(
+        config.fallback_by_default,
+        "lite mode does not emit an ArrayRef alignment assertion around a fallback",
+    )
     def test_fallback_alignment_assert_with_stack_allocation(self):
         def slice2d(x):
             return (3 * x)[..., 1:-15]
