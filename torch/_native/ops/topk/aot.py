@@ -15,9 +15,9 @@ DISPATCH_KEY = "CUDA"
 KERNEL_MODULE = "cutedsl_kernels.py"
 # Stated rather than defaulted: the declared ranges and work rungs are measured
 # against aten on Hopper and Blackwell.
-# Both spellings of each capability, since either can appear in TORCH_CUDA_ARCH_LIST
-# and they are distinct nvcc targets.
-ARCHS = ("sm_90", "sm_90a", "sm_100", "sm_100a")
+# These kernels require no architecture-conditional instructions. The exporter
+# chooses the widest compatible target for the build's supported devices.
+ARCHS = ("sm_90", "sm_100f", "sm_120f")
 
 _DTYPES = {"float32": "at::kFloat", "bfloat16": "at::kBFloat16"}
 _RADIX_KS = (64, 128, 256, 512, 1024)
