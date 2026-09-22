@@ -6498,7 +6498,15 @@ class AOTInductorTestsTemplate:
         a = torch.randn(batch, M, K, device=self.device)
         example_inputs = (a,)
 
-        if self.device == "mps":
+        if self.device == "cpu" and self.allow_stack_allocation:
+            # ArrayRef stack allocation does not support the transpose/addmm
+            # C shims used by this model, so the graph is lowered to the
+            # reshape fallback plus a C++ fused kernel instead.
+            kernel_calls = [
+                ("aoti_torch_cpu_reshape", 1),
+                ("cpp_fused_0", 1),
+            ]
+        elif self.device == "mps":
             kernel_calls = [("aoti_torch_mps_addmm_out", 2)]
         elif self.device == GPU_TYPE:
             kernel_calls = [
@@ -6530,7 +6538,11 @@ class AOTInductorTestsTemplate:
                 ).run(code)
 
         # test printing selected kernel's tensor values codegen
-        filtered_kernel_name = f"aoti_torch_{self.device}_addmm_out"
+        filtered_kernel_name, filtered_kernel_count = (
+            ("cpp_fused_0", 1)
+            if self.device == "cpu" and self.allow_stack_allocation
+            else (f"aoti_torch_{self.device}_addmm_out", 2)
+        )
         with config.patch(
             {
                 "aot_inductor.debug_intermediate_value_printer": "2",
@@ -6540,9 +6552,7 @@ class AOTInductorTestsTemplate:
             result, code = run_and_get_cpp_code(
                 AOTIRunnerUtil.legacy_compile, model, example_inputs
             )
-            filtered_kernel_calls = [
-                (filtered_kernel_name, 2),
-            ]
+            filtered_kernel_calls = [(filtered_kernel_name, filtered_kernel_count)]
             for kernel_call, count in filtered_kernel_calls:
                 FileCheck().check_count(
                     f"before_launch - {kernel_call}",
@@ -6590,11 +6600,17 @@ class AOTInductorTestsTemplate:
         batch = 2
         a = torch.randn(batch, M, K, device=self.device)
         example_inputs = (a,)
-        kernel_calls = (
-            f"aoti_torch_{GPU_TYPE}_addmm_out"
-            if self.device == GPU_TYPE
-            else "aoti_torch_cpu_addmm_out"
-        )
+        if self.device == GPU_TYPE:
+            kernel_call_patterns = [f"aoti_torch_{GPU_TYPE}_addmm_out"]
+        elif self.allow_stack_allocation:
+            # The ArrayRef path lowers this graph to an extern reshape and a
+            # C++ fused kernel. The graph id is assigned dynamically.
+            kernel_call_patterns = [
+                "aoti_torch_cpu_reshape",
+                r"graph_\d+_cpp_fused_0",
+            ]
+        else:
+            kernel_call_patterns = ["aoti_torch_cpu_addmm_out"]
         with config.patch(
             {
                 "cpp.enable_kernel_profile": enable_kernel_profile,
@@ -6604,13 +6620,15 @@ class AOTInductorTestsTemplate:
             _, code = run_and_get_cpp_code(
                 AOTIRunnerUtil.compile, model, example_inputs
             )
-            shim_fn_codes = f'RAIIAtenRecordFunctionHandle .*\\("{kernel_calls}"'
             if enable_kernel_profile:
                 if enable_kernel_context_guard:
                     FileCheck().check("KernelContextGuard").run(code)
                 else:
                     FileCheck().check_not("KernelContextGuard").run(code)
-                FileCheck().check_regex(shim_fn_codes).run(code)
+                for kernel_call_pattern in kernel_call_patterns:
+                    FileCheck().check_regex(
+                        rf'RAIIAtenRecordFunctionHandle .*\\("{kernel_call_pattern}"'
+                    ).run(code)
             else:
                 FileCheck().check_not("RAIIAtenRecordFunctionHandle").check_not(
                     "KernelContextGuard"
@@ -7125,9 +7143,15 @@ class AOTInductorTestsTemplate:
 
         example_inputs = (torch.randn(4, 4, device="cpu"),)
 
-        kernel_calls = [
-            ("cpp_fused_mul_sqrt_0", 2),
-        ]
+        if self.allow_stack_allocation:
+            # The ArrayRef path uses a separate C++ kernel and an extern
+            # mul.Tensor fallback because sqrt has no ArrayRef C shim.
+            kernel_calls = [
+                ("cpp_fused_0", 1),
+                ("aoti_torch_cpu_mul_Tensor", 3),
+            ]
+        else:
+            kernel_calls = [("cpp_fused_mul_sqrt_0", 2)]
 
         with config.patch({"aot_inductor.debug_intermediate_value_printer": "2"}):
             result, code = run_and_get_cpp_code(
