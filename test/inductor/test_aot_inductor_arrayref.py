@@ -353,6 +353,10 @@ if config.fallback_by_default:
             "test_deconv_freezing": fail_stack_allocation(),
             "test_freezing": fail_stack_allocation(),
             "test_linear_freezing": fail_stack_allocation(),
+            # Lite mode sends the original op directly through fallback instead
+            # of decomposing it to _wrapped_quantized_linear_prepacked, but the
+            # original op does not have an AOTI C shim.
+            "test_quanatized_int8_linear": fail_stack_allocation(),
             "test_return_view_constant": fail_stack_allocation(),
             "test_scalar_range_asserts_disabled_drops_inferred_bound": fail_stack_allocation(),
             "test_scalar_range_asserts_disabled_drops_user_check": fail_stack_allocation(),
