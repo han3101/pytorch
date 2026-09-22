@@ -332,6 +332,23 @@ CPU_TEST_FAILURES = {
     "test_seq": fail_stack_allocation(is_skip=True),
 }
 
+STACK_ALLOCATION_TEST_FAILURES = dict(CPU_TEST_FAILURES)
+if config.fallback_by_default:
+    # The all-fallback lowering avoids this ArrayRef assignment failure, so keep
+    # the now-passing test enabled in the lite-mode lane.
+    STACK_ALLOCATION_TEST_FAILURES.pop("test_cond_unbacked_symint_predicate")
+    # These paths remain unsupported when every eligible operation is lowered
+    # through the proxy executor. Keep running them as expected failures so an
+    # eventual implementation fix is reported as an unexpected success.
+    STACK_ALLOCATION_TEST_FAILURES.update(
+        {
+            "test_buffer_mutation_and_force_mmap_weights": fail_stack_allocation(),
+            "test_cond_nested": fail_stack_allocation(),
+            "test_cond_with_parameters": fail_stack_allocation(),
+            "test_deconv_freezing": fail_stack_allocation(),
+        }
+    )
+
 
 class AOTInductorTestABICompatibleCpuWithStackAllocation(TestCase):
     device = "cpu"
@@ -347,7 +364,7 @@ copy_tests(
     AOTInductorTestsTemplate,
     AOTInductorTestABICompatibleCpuWithStackAllocation,
     "cpu_with_stack_allocation",
-    CPU_TEST_FAILURES,
+    STACK_ALLOCATION_TEST_FAILURES,
 )
 
 
