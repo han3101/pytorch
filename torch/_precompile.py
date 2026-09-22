@@ -238,6 +238,7 @@ import logging
 import os
 import pickle
 import stat
+import threading
 import types
 import uuid
 from types import MappingProxyType
@@ -253,6 +254,19 @@ from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 
 log = logging.getLogger(__name__)
+_CAPTURE_LOCK = threading.RLock()
+
+
+def _reinit_capture_lock_after_fork() -> None:
+    # A child that inherits this lock held by a thread the fork did not carry over
+    # would block on it forever; only the forking thread survives, so nothing that
+    # held it can still be running.
+    global _CAPTURE_LOCK
+    _CAPTURE_LOCK = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reinit_capture_lock_after_fork)
 
 
 if TYPE_CHECKING:
@@ -1867,7 +1881,8 @@ class PrecompiledModule(PrecompiledRunnable):
                 "precompile: mark_unbacked (dynamic shapes) is only supported with "
                 "backend='inductor'; eager + unbacked is not supported."
             )
-        capture = _capture(self._fn, args, self._decompositions)
+        with _CAPTURE_LOCK:
+            capture = _capture(self._fn, args, self._decompositions)
         self._module_positions = capture.module_positions
         self._num_positional_args = capture.num_positional_args
         self._param_names = capture.param_names
@@ -2375,10 +2390,14 @@ class _PrecompileApi:
         contract; read Note [precompile programming model] before using it. The artifact
         faithfully reproduces ``fn`` only for callers that uphold that contract.
 
-        THREADING: the inductor lowering step drives process-global compiler state
-        and is serialized by an internal lock, so concurrent ``backend="inductor"``
-        calls lower one at a time. The make_fx capture phase and the ``backend="eager"``
-        path are NOT serialized.
+        THREADING: capture temporarily clears the example tensors' ``.grad`` and swaps
+        the example module's parameters in place, so two captures sharing a model would
+        corrupt each other. Capture is therefore serialized by one process-wide reentrant
+        lock, which also serializes captures of disjoint models; the inductor lowering
+        step has its own compiler lock. The lock orders precompile calls only: do not use
+        the example model from another thread while precompile runs. The capture lock is
+        held across ``fn`` itself, so an ``fn`` that blocks waiting on another thread's
+        precompile deadlocks.
 
         ``backend`` selects how the captured graph is realized:
 
