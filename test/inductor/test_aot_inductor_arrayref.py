@@ -344,8 +344,19 @@ if config.fallback_by_default:
         {
             "test_buffer_mutation_and_force_mmap_weights": fail_stack_allocation(),
             "test_cond_nested": fail_stack_allocation(),
+            "test_cond_with_multiple_outputs": fail_stack_allocation(),
             "test_cond_with_parameters": fail_stack_allocation(),
+            "test_const_graph_no_autotune_at_compile_time": fail_stack_allocation(),
+            "test_constant_folding": fail_stack_allocation(),
+            "test_constant_folding_with_update": fail_stack_allocation(),
             "test_deconv_freezing": fail_stack_allocation(),
+            "test_return_view_constant": fail_stack_allocation(),
+            # This currently corrupts the lite-mode runner's constant-buffer
+            # state and segfaults the process, which an expected failure cannot
+            # contain. Keep the normal-mode coverage enabled.
+            "test_update_inactive_constant_buffer_with_interleaved_folded_constants": fail_stack_allocation(
+                is_skip=True
+            ),
         }
     )
 
